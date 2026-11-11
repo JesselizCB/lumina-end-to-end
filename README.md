@@ -169,7 +169,7 @@ Por defecto, 50 vehículos envían un evento cada 5 segundos durante 3 minutos. 
 PYTHONPATH=src .venv/bin/python -m lumina.streaming.gps_simulator --project ${P} --duration 180
 ```
 
-**Reglas del pipeline:** un evento va a `errores-dlq`, con el mensaje original y su `motivo`, si no es JSON válido, le falta un campo, tiene tipos incorrectos, tiene coordenadas imposibles, su velocidad está fuera de 0 a 150 km/h, su fecha no tiene zona horaria o cae fuera de las zonas. Los duplicados con el mismo `evento_id` dentro de una ventana de 10 segundos se descartan.
+**Reglas del pipeline:** un evento va a `errores-dlq`, con el mensaje original y su `motivo`, si no es JSON válido, le falta un campo, tiene tipos incorrectos, tiene coordenadas imposibles, su velocidad está fuera de 0 a 150 km/h, su fecha no tiene zona horaria o cae fuera de las zonas. El primer evento con cada `evento_id` pasa de inmediato, y las copias que lleguen en los 10 minutos siguientes se descartan. La deduplicación no espera ventanas de tiempo, porque eso subía la latencia a casi un minuto.
 
 **5.4 Apagar el job al terminar (importante por costo)**
 
@@ -179,6 +179,8 @@ Dataflow cobra mientras está encendido, unos S/ 27 al día.
 JOB=$(gcloud dataflow jobs list --region=${R} --filter="name=lumina-gps-stream AND state=Running" --format="value(id)")
 gcloud dataflow jobs drain ${JOB} --region=${R}
 ```
+
+Drenar deja de leer mensajes nuevos, pero termina de procesar los que ya entraron. Si el lanzador del paso 5.2 seguía abierto, termina con un `AssertionError`. Es esperado y no indica un fallo del job.
 
 ### 6. Verificar los resultados
 
@@ -209,6 +211,30 @@ SELECT JSON_VALUE(data, '$.motivo') AS motivo, COUNT(*) AS n
 FROM `project1-508022.bronze.errores`
 GROUP BY motivo ORDER BY n DESC;
 ```
+
+## Resultados obtenidos (11 de noviembre de 2026)
+
+**Batch, TLC enero 2024, en Dataproc Serverless**
+
+| Medida | Valor |
+|---|---|
+| Viajes en Bronze | 2.964.624 |
+| Viajes en Silver | 2.868.850 |
+| Rechazados | 95.694 (60.371 por distancia no positiva, 34.064 por tarifa negativa, 1.129 por velocidad, 112 por horario, 18 fuera del mes) |
+| Duplicados eliminados | 80 |
+| Duración del job | Unos 2 minutos, incluido el arranque |
+
+**Tiempo real, 4 minutos de simulador con 50 vehículos, en Dataflow**
+
+| Medida | Valor |
+|---|---|
+| Mensajes publicados (Bronze) | 2.397 |
+| Eventos válidos en Silver | 2.311, sin ningún faltante frente a Bronze |
+| Errores enviados a la DLQ | 40 (12 velocidad, 11 campo faltante, 9 coordenada, 8 JSON inválido) |
+| Duplicados descartados | 46 |
+| Latencia del evento a Silver, ya estable | 1,2 s de mediana, 1,6 s en el percentil 95 |
+
+Los primeros 2 minutos tuvieron latencias de hasta 2 minutos, porque los eventos esperaban a que arrancara el trabajador de Dataflow. Para una demo, conviene encender el simulador unos minutos después de que el job aparezca como `Running`.
 
 ## Estructura del repositorio
 

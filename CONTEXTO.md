@@ -2,7 +2,7 @@
 
 **Debemos entregar código funcional, no otro documento, hasta el 12 de noviembre de 2026** (prórroga; la fecha original era el 7). La Parte 1, el PDF de arquitectura, es nuestra base y no se modifica. La Parte 2 vale 25 % de la nota.
 
-**Estado al 11 de noviembre:** la base en GCP está creada y el job de Spark ya corre en Dataproc Serverless con datos reales de enero 2024: 2.964.624 viajes en Bronze, 2.868.850 en Silver, 95.694 rechazados y 80 duplicados eliminados. Faltan el streaming, dbt y el modelo estrella.
+**Estado al 11 de noviembre:** la base en GCP está creada y el job de Spark ya corre en Dataproc Serverless con datos reales de enero 2024: 2.964.624 viajes en Bronze, 2.868.850 en Silver, 95.694 rechazados y 80 duplicados eliminados. El streaming de GPS también corre en Dataflow, con 1,2 segundos de latencia mediana y sin eventos perdidos. Falta el modelo estrella con dbt. El paso a paso está en el [README](README.md).
 
 ## Qué nos evalúan
 
@@ -102,9 +102,10 @@ Por el plazo, el streaming cubre solo el GPS. Sensores, solicitudes, carga de tr
 - [x] Las 12 pruebas del job de Spark pasan
 - [x] Base en GCP: alerta de presupuesto, bucket, datasets y tópicos
 - [x] Job de Spark corriendo en Dataproc con TLC enero 2024
-- [ ] Simulador de GPS y pipeline de Beam en Dataflow
+- [x] Simulador de GPS y pipeline de Beam en Dataflow
+- [x] README con el paso a paso y los resultados
 - [ ] dbt y modelo estrella en Gold
-- [ ] README y evidencia
+- [ ] Capturas para la entrega
 
 Las zonas siguen siendo provisionales (`seeds/map_zona_fuente.csv`), así que los resultados por zona todavía no significan nada.
 
@@ -123,7 +124,9 @@ Proyecto `project1-508022`, región `southamerica-west1` (Santiago).
 | Bucket privado | `gs://lumina-raw-project1-508022` |
 | Datasets | `bronze`, `silver`, `gold` |
 | Tópicos | `gps-vehiculo`, `errores-dlq` |
-| Tablas | `bronze.viajes_tlc`, `silver.map_zona_fuente`, `silver.viajes`, `silver.rechazos_viajes` |
+| Tablas | `bronze.viajes_tlc`, `bronze.gps_vehiculo`, `bronze.errores`, `silver.map_zona_fuente`, `silver.viajes`, `silver.rechazos_viajes`, `silver.gps_vehiculo` |
+| Suscripciones | `gps-vehiculo-bronze` y `errores-dlq-bronze` (a BigQuery), `gps-vehiculo-beam` (para Dataflow) |
+| Job de Dataflow | `lumina-gps-stream`, drenado al terminar cada prueba |
 
 **Costos:** Dataflow cobra mientras está encendido, unos S/ 27 al día. Apáguenlo al terminar cada sesión.
 
