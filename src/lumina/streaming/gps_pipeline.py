@@ -15,7 +15,8 @@ from typing import Iterable
 
 import apache_beam as beam
 from apache_beam.options.pipeline_options import PipelineOptions
-from apache_beam.transforms.window import FixedWindows
+from apache_beam.transforms.deduplicate import DeduplicatePerKey
+from apache_beam.utils.timestamp import Duration
 
 VALID = "validos"
 ERRORS = "errores"
@@ -23,7 +24,8 @@ REQUIRED_FIELDS = ("evento_id", "vehiculo_id", "lat", "lon", "velocidad", "ts")
 NUMERIC_FIELDS = ("lat", "lon", "velocidad")
 MAX_SPEED_KMH = 150.0
 BUCKET_SECONDS = 15 * 60
-DEDUP_WINDOW_SECONDS = 10
+# How long an evento_id is remembered; the first copy is emitted immediately.
+DEDUP_MEMORY_SECONDS = 10 * 60
 
 
 class InvalidEvent(Exception):
@@ -137,10 +139,6 @@ def _key_by_event(row: dict) -> tuple[str, dict]:
     return row["evento_id"], row
 
 
-def _first(grouped: tuple[str, Iterable[dict]]) -> dict:
-    return next(iter(grouped[1]))
-
-
 def _stamp_processing_time(row: dict) -> dict:
     return {**row, "procesado_en": _now()}
 
@@ -148,10 +146,10 @@ def _stamp_processing_time(row: dict) -> dict:
 class ProcessGps(beam.PTransform):
     """Raw Pub/Sub payloads in; ``{VALID: rows, ERRORS: error records}`` out."""
 
-    def __init__(self, zones: list[dict], dedup_window_seconds: int = DEDUP_WINDOW_SECONDS):
+    def __init__(self, zones: list[dict], dedup_memory_seconds: int = DEDUP_MEMORY_SECONDS):
         super().__init__()
         self.zones = zones
-        self.dedup_window_seconds = dedup_window_seconds
+        self.dedup_memory_seconds = dedup_memory_seconds
 
     def expand(self, messages):
         results = messages | "Validate" >> beam.ParDo(ValidateGps(self.zones)).with_outputs(
@@ -159,10 +157,11 @@ class ProcessGps(beam.PTransform):
         )
         valid = (
             results[VALID]
-            | "DedupWindow" >> beam.WindowInto(FixedWindows(self.dedup_window_seconds))
             | "KeyByEvent" >> beam.Map(_key_by_event)
-            | "GroupDuplicates" >> beam.GroupByKey()
-            | "KeepFirst" >> beam.Map(_first)
+            | "DropDuplicates" >> DeduplicatePerKey(
+                processing_time_duration=Duration(seconds=self.dedup_memory_seconds)
+            )
+            | "DropKey" >> beam.Values()
             | "StampProcessingTime" >> beam.Map(_stamp_processing_time)
         )
         return {VALID: valid, ERRORS: results[ERRORS]}

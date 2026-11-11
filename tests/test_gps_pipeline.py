@@ -109,6 +109,23 @@ def test_pipeline_deduplicates_and_routes_errors():
         )
 
 
+def test_duplicates_far_apart_in_event_time_are_still_removed():
+    with TestPipeline() as pipeline:
+        outputs = (
+            pipeline
+            | beam.Create([(event(), 1_000), (event(), 1_060)])
+            | "EventTime" >> beam.MapTuple(
+                lambda message, seconds: beam.window.TimestampedValue(message, seconds)
+            )
+            | ProcessGps(ZONES)
+        )
+
+        assert_that(
+            outputs[VALID] | "Ids" >> beam.Map(lambda row: row["evento_id"]),
+            equal_to(["v001-1"]),
+        )
+
+
 def test_simulated_events_are_valid_and_inside_zones():
     fleet = create_fleet(20, random.Random(1))
 
