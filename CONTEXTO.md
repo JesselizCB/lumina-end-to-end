@@ -2,7 +2,7 @@
 
 **Debemos entregar código funcional, no otro documento, hasta el 12 de noviembre de 2026** (prórroga; la fecha original era el 7). La Parte 1, el PDF de arquitectura, es nuestra base y no se modifica. La Parte 2 vale 25 % de la nota.
 
-**Estado al 9 de noviembre:** el proyecto está creado y el primer job de Spark pasa sus 12 pruebas con datos de ejemplo. Falta correrlo con datos reales de TLC.
+**Estado al 11 de noviembre:** la base en GCP está creada y el job de Spark ya corre en Dataproc Serverless con datos reales de enero 2024: 2.964.624 viajes en Bronze, 2.868.850 en Silver, 95.694 rechazados y 80 duplicados eliminados. Faltan el streaming, dbt y el modelo estrella.
 
 ## Qué nos evalúan
 
@@ -88,12 +88,11 @@ El enunciado no evalúa esto, así que no lo construimos ahora: Gemini y el asis
 
 | Día | Objetivo | Responsable |
 |---|---|---|
-| 9 nov | Datos, zonas y job de Spark funcionando | Por asignar |
-| 10 nov | Simulador y pipeline de Beam | Por asignar |
-| 11 nov | dbt: Silver de referencias y modelo estrella en Gold | Por asignar |
-| 12 nov | README, conteos, corrida completa y entrega | Por asignar |
+| 11 nov | Base en GCP y Spark en Dataproc (hecho); simulador y Beam | Por asignar |
+| 11-12 nov | dbt y modelo estrella mínimo en Gold | Por asignar |
+| 12 nov | README, conteos, capturas y entrega | Por asignar |
 
-Si algo se atrasa, se recortan primero las fuentes secundarias (carga OART y eventos), nunca el batch ni el streaming.
+Por el plazo, el streaming cubre solo el GPS. Sensores, solicitudes, carga de trenes, Uber Movement, censo y eventos quedan como trabajo futuro.
 
 ## Dónde estamos
 
@@ -101,16 +100,51 @@ Si algo se atrasa, se recortan primero las fuentes secundarias (carga OART y eve
 - [x] Proyecto creado en `lumina-pipelines/`
 - [x] Job de Spark y sus pruebas escritos (`src/lumina/batch/silver_trips.py`)
 - [x] Las 12 pruebas del job de Spark pasan
-- [ ] Probar el job con datos reales de TLC
-- [ ] Referencias, simulador, Beam, dbt y evidencia
+- [x] Base en GCP: alerta de presupuesto, bucket, datasets y tópicos
+- [x] Job de Spark corriendo en Dataproc con TLC enero 2024
+- [ ] Simulador de GPS y pipeline de Beam en Dataflow
+- [ ] dbt y modelo estrella en Gold
+- [ ] README y evidencia
 
-Lo probado hasta ahora es solo local. La lectura y escritura en BigQuery del job todavía no se ha ejecutado.
+Las zonas siguen siendo provisionales (`seeds/map_zona_fuente.csv`), así que los resultados por zona todavía no significan nada.
 
 ## Lo que necesitamos definir como equipo
 
-1. **Proyecto de GCP:** ¿alguien tiene uno activo con créditos? dbt y BigQuery no se pueden probar sin él, y hay que instalar `gcloud`.
-2. **Zonas de DataLandia:** ¿el caso del curso las define? El PDF no las lista. Si no están, usamos una tabla provisional fácil de reemplazar.
-3. **Responsables:** asignar cada día del plan.
+1. **Zonas de DataLandia:** ¿el caso del curso las define? El PDF no las lista. Mientras tanto usamos una tabla provisional fácil de reemplazar.
+2. **Responsables:** asignar quién prepara la evidencia y la entrega.
+
+## Recursos en GCP
+
+Proyecto `project1-508022`, región `southamerica-west1` (Santiago).
+
+| Recurso | Nombre |
+|---|---|
+| Alerta de presupuesto | `lumina-p2`, S/ 100, calculada sin descontar créditos |
+| Bucket privado | `gs://lumina-raw-project1-508022` |
+| Datasets | `bronze`, `silver`, `gold` |
+| Tópicos | `gps-vehiculo`, `errores-dlq` |
+| Tablas | `bronze.viajes_tlc`, `silver.map_zona_fuente`, `silver.viajes`, `silver.rechazos_viajes` |
+
+**Costos:** Dataflow cobra mientras está encendido, unos S/ 27 al día. Apáguenlo al terminar cada sesión.
+
+## Cómo correr el job de Spark en GCP
+
+```bash
+P=project1-508022
+gcloud dataproc batches submit pyspark src/lumina/batch/silver_trips.py \
+  --region=southamerica-west1 --version=2.2 \
+  --deps-bucket="gs://lumina-raw-${P}" \
+  --properties=spark.sql.optimizer.dynamicPartitionPruning.enabled=false \
+  -- --bronze "bq:${P}.bronze.viajes_tlc" \
+     --zone-map "bq:${P}.silver.map_zona_fuente" \
+     --silver "bq:${P}.silver.viajes" \
+     --rejected "bq:${P}.silver.rechazos_viajes" \
+     --periodo 2024-01 --temp-bucket "lumina-raw-${P}"
+```
+
+Dos detalles que evitan errores:
+- **`dynamicPartitionPruning.enabled=false`:** sin esto, el conector de BigQuery falla al leer Bronze, que está particionada por fecha de ingesta.
+- **`--temp-bucket`:** Silver se escribe a través del bucket porque la escritura directa ignora la partición por día y la agrupación por zona.
 
 ## Cómo correr las pruebas
 

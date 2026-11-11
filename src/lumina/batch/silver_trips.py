@@ -156,11 +156,13 @@ def _read(spark: SparkSession, reference: str) -> DataFrame:
     return spark.read.parquet(reference)
 
 
-def _write_silver(silver: DataFrame, reference: str) -> None:
+def _write_silver(silver: DataFrame, reference: str, temp_bucket: str | None) -> None:
     if reference.startswith(BIGQUERY_PREFIX):
+        # Direct writes ignore partitioning and clustering, so load through GCS.
         (
             silver.write.format("bigquery")
-            .option("writeMethod", "direct")
+            .option("writeMethod", "indirect")
+            .option("temporaryGcsBucket", temp_bucket)
             .option("partitionField", "dia")
             .option("partitionType", "DAY")
             .option("clusteredFields", "zona_origen_id")
@@ -190,7 +192,12 @@ def main(argv: Sequence[str] | None = None) -> None:
     parser.add_argument("--silver", required=True)
     parser.add_argument("--rejected", required=True)
     parser.add_argument("--periodo", required=True, help="source month, YYYY-MM")
+    parser.add_argument(
+        "--temp-bucket", help="GCS bucket for BigQuery loads; required for bq: silver"
+    )
     args = parser.parse_args(argv)
+    if args.silver.startswith(BIGQUERY_PREFIX) and not args.temp_bucket:
+        parser.error("--temp-bucket is required when --silver is a BigQuery table")
 
     spark = (
         SparkSession.builder.appName("lumina-silver-trips")
@@ -200,7 +207,7 @@ def main(argv: Sequence[str] | None = None) -> None:
     silver, rejected = build_silver_trips(
         _read(spark, args.bronze), _read(spark, args.zone_map), args.periodo
     )
-    _write_silver(silver, args.silver)
+    _write_silver(silver, args.silver, args.temp_bucket)
     _write_rejected(rejected, args.rejected)
 
 
