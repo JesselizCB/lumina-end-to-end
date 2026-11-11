@@ -2,7 +2,7 @@
 
 **Debemos entregar código funcional, no otro documento, hasta el 12 de noviembre de 2026** (prórroga; la fecha original era el 7). La Parte 1, el PDF de arquitectura, es nuestra base y no se modifica. La Parte 2 vale 25 % de la nota.
 
-**Estado al 11 de noviembre:** la base en GCP está creada y el job de Spark ya corre en Dataproc Serverless con datos reales de enero 2024: 2.964.624 viajes en Bronze, 2.868.850 en Silver, 95.694 rechazados y 80 duplicados eliminados. El streaming de GPS también corre en Dataflow, con 1,2 segundos de latencia mediana y sin eventos perdidos. El modelo estrella en Gold está construido con dbt y pasa sus 30 pruebas de calidad. Cruza la demanda histórica de viajes con la oferta de vehículos en vivo, por zona y franja horaria del día. El paso a paso está en el [README](README.md).
+**Estado al 11 de noviembre:** la base en GCP está creada y el job de Spark ya corre en Dataproc Serverless con datos reales de enero 2024: 2.964.624 viajes en Bronze, 2.868.850 en Silver, 95.694 rechazados y 80 duplicados eliminados. El streaming de GPS también corre en Dataflow, con 1,2 segundos de latencia mediana y sin eventos perdidos. El modelo estrella en Gold está construido con dbt y pasa sus 32 pruebas de calidad. Una reproducción con reloj simulado llenó el GPS de 6:00 a 22:00 (64 de 96 franjas). Cruza la demanda histórica de viajes con la oferta de vehículos en vivo, por zona y franja horaria del día. El paso a paso está en el [README](README.md).
 
 ## Qué nos evalúan
 

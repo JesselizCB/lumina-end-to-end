@@ -175,6 +175,17 @@ Por defecto, 50 vehículos envían un evento cada 5 segundos durante 3 minutos. 
 PYTHONPATH=src .venv/bin/python -m lumina.streaming.gps_simulator --project ${P} --duration 180
 ```
 
+**Reproducción con reloj simulado (para llenar otras franjas del día)**
+
+Los eventos llevan horas simuladas en lugar de la hora actual, y se marcan con `modo: reproduccion`. Este ejemplo recorre el 10 de noviembre de 6:00 a 22:00 hora de Nueva York, avanzando 5 minutos simulados por segundo real:
+
+```bash
+PYTHONPATH=src .venv/bin/python -m lumina.streaming.gps_simulator --project ${P} --interval 1 \
+  --replay-start 2026-11-10T06:00:00-05:00 --replay-end 2026-11-10T22:00:00-05:00 --replay-step 300
+```
+
+Usen fechas pasadas: con fechas futuras el reloj interno de Dataflow se adelantaría. Estos eventos no sirven para medir latencia, porque su hora es simulada: filtren con `COALESCE(modo, 'tiempo_real') = 'tiempo_real'`.
+
 **Reglas del pipeline:** un evento va a `errores-dlq`, con el mensaje original y su `motivo`, si no es JSON válido, le falta un campo, tiene tipos incorrectos, tiene coordenadas imposibles, su velocidad está fuera de 0 a 150 km/h, su fecha no tiene zona horaria o cae fuera de las zonas. El primer evento con cada `evento_id` pasa de inmediato, y las copias que lleguen en los 10 minutos siguientes se descartan. La deduplicación no espera ventanas de tiempo, porque eso subía la latencia a casi un minuto.
 
 **5.4 Apagar el job al terminar (importante por costo)**
@@ -229,12 +240,13 @@ SELECT motivo, COUNT(*) AS n
 FROM `project1-508022.silver.rechazos_viajes`
 GROUP BY motivo ORDER BY n DESC;
 
--- Tiempo real: latencia desde el evento hasta Silver
+-- Tiempo real: latencia desde el evento hasta Silver (excluye la reproducción)
 SELECT
   COUNT(*) AS eventos,
   APPROX_QUANTILES(TIMESTAMP_DIFF(procesado_en, ts, MILLISECOND), 100)[OFFSET(50)] / 1000 AS p50_segundos,
   APPROX_QUANTILES(TIMESTAMP_DIFF(procesado_en, ts, MILLISECOND), 100)[OFFSET(95)] / 1000 AS p95_segundos
-FROM `project1-508022.silver.gps_vehiculo`;
+FROM `project1-508022.silver.gps_vehiculo`
+WHERE COALESCE(modo, 'tiempo_real') = 'tiempo_real';
 
 -- Tiempo real: crudo frente a limpio, y errores por motivo
 SELECT
@@ -270,22 +282,34 @@ GROUP BY motivo ORDER BY n DESC;
 
 Los primeros 2 minutos tuvieron latencias de hasta 2 minutos, porque los eventos esperaban a que arrancara el trabajador de Dataflow. Para una demo, conviene encender el simulador unos minutos después de que el job aparezca como `Running`.
 
+**Reproducción con reloj simulado, 10 de noviembre de 6:00 a 22:00 hora de Nueva York**
+
+| Medida | Valor |
+|---|---|
+| Mensajes publicados | 9.776 en unos 4 minutos reales |
+| Eventos válidos en Silver | 9.430, sin ningún faltante frente a Bronze |
+| Errores enviados a la DLQ | 176 |
+| Duplicados descartados | 170 |
+| Intervalos de 15 minutos cubiertos | 64 |
+
 **Gold con dbt**
 
 | Medida | Valor |
 |---|---|
-| Pruebas de dbt | 30 de 30 pasan |
+| Pruebas de dbt | 32 de 32 pasan |
 | `fact_viaje` | 2.868.850 viajes, igual que Silver, en 31 días |
-| `fact_oferta_demanda` | 480 filas (5 zonas × 96 franjas) |
+| `fact_oferta_demanda` | 480 filas (5 zonas × 96 franjas); 320 con datos de GPS (64 franjas de 6:00 a 22:00) |
 | Demanda diaria por periodo | Tarde 34.585, noche 30.293, mañana 20.690, madrugada 6.976 |
 
-Ejemplo del cruce en las franjas donde corrió el simulador:
+Viajes por vehículo disponible, promedio por periodo (solo franjas con GPS):
 
-| Zona | Franja | Viajes por día | Vehículos | Viajes por vehículo |
-|---|---|---|---|---|
-| 2 | 11:45 | 302,8 | 16 | 18,9 |
-| 5 | 11:45 | 191,6 | 5 | 38,3 |
-| 5 | 12:00 | 189,8 | 15 | 12,7 |
+| Periodo | Viajes por día | Vehículos promedio | Viajes por vehículo |
+|---|---|---|---|
+| Tarde | 34.585 | 10,4 | 31,3 |
+| Noche (hasta 22:00) | 22.462 | 10,3 | 29,6 |
+| Mañana | 20.690 | 10,2 | 17,2 |
+
+La zona y franja con más presión es la **zona 4 a las 18:00**: 390 viajes diarios frente a 5 vehículos, 78 viajes por vehículo. El simulador reparte los vehículos al azar, así que la oferta es pareja entre franjas y la diferencia la marca la demanda real de TLC.
 
 ```sql
 -- Zonas y franjas con más viajes por vehículo disponible
@@ -310,6 +334,6 @@ odd/tasks/                             Registro de tareas y decisiones
 ## Limitaciones conocidas
 
 - Las zonas son provisionales y no corresponden a DataLandia. Además, cada fuente se asigna a zonas con una regla distinta (`map_zona_fuente` para TLC, coordenadas para el GPS), así que el cruce funciona técnicamente, pero sus números solo tendrán sentido con las zonas reales.
-- El GPS solo cubre las franjas en que corrió el simulador. Para llenar más franjas hay que correrlo en otros horarios.
+- El GPS de 6:00 a 22:00 viene de una reproducción con reloj simulado (`modo = 'reproduccion'`), no de tiempo real. La madrugada (22:00 a 6:00) no tiene GPS.
 - El streaming cubre solo el GPS. Sensores, solicitudes de viaje y carga de trenes quedan como trabajo futuro.
 - La cuenta de servicio que usan Dataproc y Dataflow tiene roles amplios heredados del proyecto. Para producción habría que reducirlos.

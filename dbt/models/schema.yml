@@ -65,6 +65,12 @@ models:
                 field: franja_id
       - name: vehiculos
         data_tests: [not_null]
+      - name: modo
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ["tiempo_real", "reproduccion"]
 
   - name: fact_oferta_demanda
     description: >
