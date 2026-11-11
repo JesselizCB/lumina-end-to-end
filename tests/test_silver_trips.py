@@ -56,7 +56,7 @@ def zone_map(spark, rows=None):
 
 def run(spark, trips):
     silver, rejected = build_silver_trips(
-        spark.createDataFrame(trips, BRONZE_SCHEMA), zone_map(spark)
+        spark.createDataFrame(trips, BRONZE_SCHEMA), zone_map(spark), "2024-01"
     )
     return silver.collect(), rejected.collect()
 
@@ -97,6 +97,14 @@ def test_exact_duplicates_are_kept_once(spark):
         ((PICKUP, DROPOFF, 10, 20, 100.0, 25.0), "velocidad_fuera_de_rango"),
         ((PICKUP, DROPOFF, 77, 20, 10.0, 25.0), "zona_desconocida"),
         ((PICKUP, DROPOFF, 10, 99, 10.0, 25.0), "zona_desconocida"),
+        (
+            (datetime(2002, 12, 31, 17, 0), datetime(2002, 12, 31, 17, 30), 10, 20, 10.0, 25.0),
+            "fecha_fuera_de_periodo",
+        ),
+        (
+            (datetime(2024, 2, 1, 0, 1), datetime(2024, 2, 1, 0, 31), 10, 20, 10.0, 25.0),
+            "fecha_fuera_de_periodo",
+        ),
     ],
 )
 def test_invalid_trip_is_rejected_with_reason(spark, trip, motivo):
@@ -111,7 +119,14 @@ def test_ambiguous_zone_map_fails_instead_of_multiplying_trips(spark):
     bronze = spark.createDataFrame([VALID_TRIP], BRONZE_SCHEMA)
 
     with pytest.raises(ValueError, match="10"):
-        build_silver_trips(bronze, zone_map(spark, ambiguous))
+        build_silver_trips(bronze, zone_map(spark, ambiguous), "2024-01")
+
+
+def test_period_must_be_year_and_month(spark):
+    bronze = spark.createDataFrame([VALID_TRIP], BRONZE_SCHEMA)
+
+    with pytest.raises(ValueError, match="2024-1"):
+        build_silver_trips(bronze, zone_map(spark), "2024-1")
 
 
 def test_main_reads_bronze_and_writes_silver_and_rejected(spark, tmp_path):
@@ -131,6 +146,7 @@ def test_main_reads_bronze_and_writes_silver_and_rejected(spark, tmp_path):
             "--zone-map", map_path,
             "--silver", silver_path,
             "--rejected", rejected_path,
+            "--periodo", "2024-01",
         ]
     )
 

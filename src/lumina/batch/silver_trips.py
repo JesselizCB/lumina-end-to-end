@@ -8,6 +8,7 @@ Parquet path.
 """
 
 import argparse
+import re
 from typing import Sequence
 
 from pyspark.sql import Column, DataFrame, SparkSession
@@ -19,6 +20,7 @@ KM_PER_MILE = 1.60934
 MAX_SPEED_KMH = 120.0
 BUCKET_SECONDS = 15 * 60
 BIGQUERY_PREFIX = "bq:"
+PERIOD_PATTERN = re.compile(r"\d{4}-(0[1-9]|1[0-2])")
 
 REQUIRED_COLUMNS = [
     "tpep_pickup_datetime",
@@ -66,13 +68,16 @@ def _lookup_zone(df: DataFrame, zones: DataFrame, key: str, target: str) -> Data
     ).drop(f"_{target}_key")
 
 
-def _rejection_reason() -> Column:
+def _rejection_reason(periodo: str) -> Column:
     any_null = F.lit(False)
     for column in REQUIRED_COLUMNS:
         any_null = any_null | F.col(column).isNull()
 
+    # The source month is defined in local time, before the UTC conversion.
+    pickup_month = F.date_format("tpep_pickup_datetime", "yyyy-MM")
     return (
         F.when(any_null, "campo_nulo")
+        .when(pickup_month != periodo, "fecha_fuera_de_periodo")
         .when(F.col("trip_distance") <= 0, "distancia_no_positiva")
         .when(F.col("fin_utc") <= F.col("inicio_utc"), "fin_no_posterior_a_inicio")
         .when(F.col("fare_amount") < 0, "tarifa_negativa")
@@ -85,9 +90,15 @@ def _rejection_reason() -> Column:
 
 
 def build_silver_trips(
-    bronze: DataFrame, zone_map: DataFrame
+    bronze: DataFrame, zone_map: DataFrame, periodo: str
 ) -> tuple[DataFrame, DataFrame]:
-    """Return ``(silver, rejected)``; rejected rows keep Bronze columns plus ``motivo``."""
+    """Return ``(silver, rejected)``; rejected rows keep Bronze columns plus ``motivo``.
+
+    ``periodo`` is the source file month as ``YYYY-MM``; trips starting outside
+    it are rejected.
+    """
+    if not PERIOD_PATTERN.fullmatch(periodo):
+        raise ValueError(f"periodo must be YYYY-MM, got {periodo}")
     zones = _source_zones(zone_map)
     keyed = _lookup_zone(bronze, zones, "PULocationID", "zona_origen_id")
     keyed = _lookup_zone(keyed, zones, "DOLocationID", "zona_destino_id")
@@ -121,7 +132,7 @@ def build_silver_trips(
         .withColumn("dia", F.to_date("inicio_utc"))
         .withColumn("tarifa", F.col("fare_amount"))
         .withColumn("viaje_id", F.sha2(natural_key, 256))
-        .withColumn("motivo", _rejection_reason())
+        .withColumn("motivo", _rejection_reason(periodo))
     )
 
     silver = (
@@ -178,6 +189,7 @@ def main(argv: Sequence[str] | None = None) -> None:
     parser.add_argument("--zone-map", required=True)
     parser.add_argument("--silver", required=True)
     parser.add_argument("--rejected", required=True)
+    parser.add_argument("--periodo", required=True, help="source month, YYYY-MM")
     args = parser.parse_args(argv)
 
     spark = (
@@ -186,7 +198,7 @@ def main(argv: Sequence[str] | None = None) -> None:
         .getOrCreate()
     )
     silver, rejected = build_silver_trips(
-        _read(spark, args.bronze), _read(spark, args.zone_map)
+        _read(spark, args.bronze), _read(spark, args.zone_map), args.periodo
     )
     _write_silver(silver, args.silver)
     _write_rejected(rejected, args.rejected)

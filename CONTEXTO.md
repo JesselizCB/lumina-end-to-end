@@ -71,6 +71,7 @@ Un viaje va a rechazos, con su motivo, si cumple alguna de estas condiciones:
 | Motivo | Condición |
 |---|---|
 | `campo_nulo` | Falta fecha, zona, distancia o tarifa |
+| `fecha_fuera_de_periodo` | El viaje empieza fuera del mes del archivo (`--periodo`, por ejemplo `2024-01`) |
 | `distancia_no_positiva` | Distancia menor o igual a 0 |
 | `fin_no_posterior_a_inicio` | El viaje termina antes o a la misma hora en que empieza |
 | `tarifa_negativa` | Tarifa menor que 0 |
