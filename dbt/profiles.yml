@@ -1,0 +1,13 @@
+lumina:
+  target: dev
+  outputs:
+    dev:
+      type: bigquery
+      method: oauth
+      project: project1-508022
+      dataset: gold
+      location: southamerica-west1
+      threads: 4
+      job_execution_timeout_seconds: 300
+      # Safety cap per query: 10 GB.
+      maximum_bytes_billed: 10000000000

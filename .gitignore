@@ -5,3 +5,7 @@ spark-warehouse/
 metastore_db/
 derby.log
 data/
+.venv-dbt/
+dbt/target/
+dbt/logs/
+dbt/dbt_packages/

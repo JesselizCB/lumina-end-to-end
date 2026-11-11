@@ -1,0 +1,16 @@
+name: lumina
+version: "1.0.0"
+profile: lumina
+
+model-paths: ["models"]
+macro-paths: ["macros"]
+test-paths: ["tests"]
+
+vars:
+  # Both sources use New York wall-clock time: TLC trips come in it and the
+  # provisional GPS zones are drawn over New York.
+  zona_horaria: "America/New_York"
+
+models:
+  lumina:
+    +materialized: table

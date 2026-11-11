@@ -1,0 +1,9 @@
+version: 2
+
+sources:
+  - name: silver
+    description: Clean data written by Spark (viajes), Beam (gps_vehiculo) and the zone seed (zonas).
+    tables:
+      - name: viajes
+      - name: gps_vehiculo
+      - name: zonas

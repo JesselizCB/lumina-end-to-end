@@ -1,0 +1,89 @@
+version: 2
+
+models:
+  - name: dim_zona
+    description: DataLandia zones (provisional).
+    columns:
+      - name: zona_id
+        data_tests: [unique, not_null]
+
+  - name: dim_franja
+    description: 15-minute slots of the day in local time, 96 rows.
+    columns:
+      - name: franja_id
+        data_tests:
+          - unique
+          - not_null
+          - accepted_values:
+              arguments:
+                values: "{{ range(96) | list }}"
+                quote: false
+
+  - name: fact_viaje
+    description: One row per clean TLC trip, keyed by local date, slot and zones.
+    columns:
+      - name: viaje_id
+        data_tests: [unique, not_null]
+      - name: franja_id
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_franja')
+                field: franja_id
+      - name: zona_origen_id
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_zona')
+                field: zona_id
+      - name: zona_destino_id
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_zona')
+                field: zona_id
+
+  - name: fact_gps_zona_15m
+    description: Vehicles and GPS events per zone and 15-minute interval.
+    columns:
+      - name: zona_id
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_zona')
+                field: zona_id
+      - name: franja_id
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_franja')
+                field: franja_id
+      - name: vehiculos
+        data_tests: [not_null]
+
+  - name: fact_oferta_demanda
+    description: >
+      Historical trip demand against live vehicle supply for every zone and slot of the day.
+      Crossed by slot of the day because the sources cover different dates.
+    columns:
+      - name: zona_id
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_zona')
+                field: zona_id
+      - name: franja_id
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_franja')
+                field: franja_id
+      - name: viajes_promedio_dia
+        data_tests: [not_null]
