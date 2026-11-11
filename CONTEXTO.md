@@ -2,7 +2,7 @@
 
 **Debemos entregar código funcional, no otro documento, hasta el 12 de noviembre de 2026** (prórroga; la fecha original era el 7). La Parte 1, el PDF de arquitectura, es nuestra base y no se modifica. La Parte 2 vale 25 % de la nota.
 
-**Estado al 11 de noviembre:** la base en GCP está creada y el job de Spark ya corre en Dataproc Serverless con datos reales de enero 2024: 2.964.624 viajes en Bronze, 2.868.850 en Silver, 95.694 rechazados y 80 duplicados eliminados. El streaming de GPS también corre en Dataflow, con 1,2 segundos de latencia mediana y sin eventos perdidos. Falta el modelo estrella con dbt. El paso a paso está en el [README](README.md).
+**Estado al 11 de noviembre:** la base en GCP está creada y el job de Spark ya corre en Dataproc Serverless con datos reales de enero 2024: 2.964.624 viajes en Bronze, 2.868.850 en Silver, 95.694 rechazados y 80 duplicados eliminados. El streaming de GPS también corre en Dataflow, con 1,2 segundos de latencia mediana y sin eventos perdidos. El modelo estrella en Gold está construido con dbt y pasa sus 30 pruebas de calidad. Cruza la demanda histórica de viajes con la oferta de vehículos en vivo, por zona y franja horaria del día. El paso a paso está en el [README](README.md).
 
 ## Qué nos evalúan
 
@@ -104,7 +104,7 @@ Por el plazo, el streaming cubre solo el GPS. Sensores, solicitudes, carga de tr
 - [x] Job de Spark corriendo en Dataproc con TLC enero 2024
 - [x] Simulador de GPS y pipeline de Beam en Dataflow
 - [x] README con el paso a paso y los resultados
-- [ ] dbt y modelo estrella en Gold
+- [x] dbt y modelo estrella en Gold
 - [ ] Capturas para la entrega
 
 Las zonas siguen siendo provisionales (`seeds/map_zona_fuente.csv`), así que los resultados por zona todavía no significan nada.
@@ -125,6 +125,7 @@ Proyecto `project1-508022`, región `southamerica-west1` (Santiago).
 | Datasets | `bronze`, `silver`, `gold` |
 | Tópicos | `gps-vehiculo`, `errores-dlq` |
 | Tablas | `bronze.viajes_tlc`, `bronze.gps_vehiculo`, `bronze.errores`, `silver.map_zona_fuente`, `silver.viajes`, `silver.rechazos_viajes`, `silver.gps_vehiculo` |
+| Gold (dbt) | `dim_zona`, `dim_franja`, `fact_viaje`, `fact_gps_zona_15m`, `fact_oferta_demanda` |
 | Suscripciones | `gps-vehiculo-bronze` y `errores-dlq-bronze` (a BigQuery), `gps-vehiculo-beam` (para Dataflow) |
 | Job de Dataflow | `lumina-gps-stream`, drenado al terminar cada prueba |
 

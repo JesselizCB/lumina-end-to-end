@@ -1,6 +1,6 @@
 # Lumina: pipelines de datos (Parte 2)
 
-Implementación de la arquitectura de la Parte 1 sobre GCP: un pipeline **batch** con Spark y uno de **tiempo real** con Beam, que limpian, enriquecen y cruzan los datos por zona y franja de 15 minutos. El modelo estrella en Gold con dbt se agrega después.
+Implementación de la arquitectura de la Parte 1 sobre GCP: un pipeline **batch** con Spark y uno de **tiempo real** con Beam, que limpian, enriquecen y cruzan los datos por zona y franja de 15 minutos. Ambos alimentan un modelo estrella en Gold construido con dbt.
 
 Para el contexto del equipo (decisiones, plan y pendientes) ver [`CONTEXTO.md`](CONTEXTO.md).
 
@@ -10,7 +10,7 @@ Para el contexto del equipo (decisiones, plan y pendientes) ver [`CONTEXTO.md`](
 |---|---|
 | Pipelines de cómputo / transformación | Spark: `src/lumina/batch/silver_trips.py`. Beam: `src/lumina/streaming/gps_pipeline.py` |
 | Procesamiento híbrido | Batch: viajes TLC en Dataproc Serverless. Tiempo real: GPS por Pub/Sub y Dataflow |
-| Modelado para analítica | Pendiente: modelo estrella en `gold` con dbt |
+| Modelado para analítica | Modelo estrella en `gold` con dbt: `dbt/models/` |
 
 ## Flujo implementado
 
@@ -21,6 +21,10 @@ BATCH      TLC (Parquet) → Cloud Storage → bronze.viajes_tlc → Spark (Data
 STREAMING  simulador → Pub/Sub gps-vehiculo ─┬→ suscripción BigQuery → bronze.gps_vehiculo (crudo)
                                              └→ Beam (Dataflow) ─┬→ silver.gps_vehiculo
                                                                  └→ Pub/Sub errores-dlq → bronze.errores
+
+GOLD       silver.viajes + silver.gps_vehiculo + silver.zonas → dbt → dim_zona, dim_franja,
+                                                                    fact_viaje, fact_gps_zona_15m,
+                                                                    fact_oferta_demanda
 ```
 
 - **Bronze** guarda siempre el dato crudo, tal como llegó.
@@ -43,6 +47,8 @@ Requiere Python 3.11, Java 17 y el [Google Cloud CLI](https://cloud.google.com/s
 ```bash
 python3.11 -m venv .venv
 .venv/bin/pip install -r requirements.txt
+python3.11 -m venv .venv-dbt                # dbt va aparte para no chocar con Beam
+.venv-dbt/bin/pip install -r requirements-dbt.txt
 gcloud auth login
 gcloud auth application-default login   # credenciales para el simulador y el lanzador de Beam
 gcloud config set project ${P}
@@ -180,9 +186,37 @@ JOB=$(gcloud dataflow jobs list --region=${R} --filter="name=lumina-gps-stream A
 gcloud dataflow jobs drain ${JOB} --region=${R}
 ```
 
-Drenar deja de leer mensajes nuevos, pero termina de procesar los que ya entraron. Si el lanzador del paso 5.2 seguía abierto, termina con un `AssertionError`. Es esperado y no indica un fallo del job.
+Drenar deja de leer mensajes nuevos, pero termina de procesar los que ya entraron. Puede tardar unos 10 minutos, porque la deduplicación recuerda cada `evento_id` durante ese tiempo. Si el lanzador del paso 5.2 seguía abierto, termina con un `AssertionError`. Es esperado y no indica un fallo del job.
 
-### 6. Verificar los resultados
+### 6. Gold: modelo estrella con dbt
+
+**6.1 Cargar las zonas a Silver (una sola vez, ya hecho)**
+
+```bash
+bq --location=${R} load --replace --source_format=CSV --skip_leading_rows=1 ${P}:silver.zonas \
+  seeds/zonas.csv zona_id:INT64,nombre:STRING,min_lon:FLOAT64,min_lat:FLOAT64,max_lon:FLOAT64,max_lat:FLOAT64
+```
+
+**6.2 Construir Gold y correr las pruebas de calidad**
+
+```bash
+cd dbt
+../.venv-dbt/bin/dbt build --profiles-dir .
+```
+
+`dbt build` crea las tablas y corre 30 pruebas: claves únicas y no nulas, que cada zona y franja exista en su dimensión, que Gold tenga exactamente los mismos viajes que Silver, y que el cruce tenga una fila por cada zona y franja. dbt usa las credenciales de `gcloud auth application-default login` y tiene un tope de 10 GB por consulta.
+
+| Tabla | Tipo | Grano |
+|---|---|---|
+| `dim_zona` | Dimensión | Una zona |
+| `dim_franja` | Dimensión | Una franja de 15 minutos del día (96 filas) |
+| `fact_viaje` | Hecho (batch) | Un viaje, con fecha local, franja y zonas |
+| `fact_gps_zona_15m` | Hecho (tiempo real) | Vehículos y eventos por zona e intervalo de 15 minutos |
+| `fact_oferta_demanda` | Hecho consolidado | Demanda histórica frente a oferta en vivo, por zona y franja del día |
+
+**Cómo se cruzan las fuentes:** los viajes son de enero de 2024 y el GPS es de hoy, así que se cruzan por **zona y franja horaria del día**, no por fecha exacta. Las dos fuentes usan la hora de Nueva York (`zona_horaria` en `dbt/dbt_project.yml`), porque TLC viene en esa hora y las zonas provisionales están dibujadas sobre Nueva York. `viajes_por_vehiculo` mide cuántos viajes diarios hay en promedio por cada vehículo disponible: un valor alto señala una zona y franja con falta de vehículos.
+
+### 7. Verificar los resultados
 
 ```sql
 -- Batch: entrada, salida y rechazos
@@ -236,12 +270,38 @@ GROUP BY motivo ORDER BY n DESC;
 
 Los primeros 2 minutos tuvieron latencias de hasta 2 minutos, porque los eventos esperaban a que arrancara el trabajador de Dataflow. Para una demo, conviene encender el simulador unos minutos después de que el job aparezca como `Running`.
 
+**Gold con dbt**
+
+| Medida | Valor |
+|---|---|
+| Pruebas de dbt | 30 de 30 pasan |
+| `fact_viaje` | 2.868.850 viajes, igual que Silver, en 31 días |
+| `fact_oferta_demanda` | 480 filas (5 zonas × 96 franjas) |
+| Demanda diaria por periodo | Tarde 34.585, noche 30.293, mañana 20.690, madrugada 6.976 |
+
+Ejemplo del cruce en las franjas donde corrió el simulador:
+
+| Zona | Franja | Viajes por día | Vehículos | Viajes por vehículo |
+|---|---|---|---|---|
+| 2 | 11:45 | 302,8 | 16 | 18,9 |
+| 5 | 11:45 | 191,6 | 5 | 38,3 |
+| 5 | 12:00 | 189,8 | 15 | 12,7 |
+
+```sql
+-- Zonas y franjas con más viajes por vehículo disponible
+SELECT zona_id, hora_inicio, viajes_promedio_dia, vehiculos_promedio, viajes_por_vehiculo
+FROM `project1-508022.gold.fact_oferta_demanda`
+WHERE intervalos_gps > 0
+ORDER BY viajes_por_vehiculo DESC;
+```
+
 ## Estructura del repositorio
 
 ```
 src/lumina/batch/silver_trips.py       Spark: Bronze → Silver de viajes TLC
 src/lumina/streaming/gps_pipeline.py   Beam: Pub/Sub → Silver de GPS, errores a la DLQ
 src/lumina/streaming/gps_simulator.py  Simulador de la flota
+dbt/                                   Modelo estrella en Gold y sus pruebas de calidad
 seeds/                                 Zonas y mapa de zonas provisionales
 tests/                                 Pruebas de ambos pipelines
 odd/tasks/                             Registro de tareas y decisiones
@@ -249,6 +309,7 @@ odd/tasks/                             Registro de tareas y decisiones
 
 ## Limitaciones conocidas
 
-- Las zonas son provisionales y no corresponden a DataLandia.
+- Las zonas son provisionales y no corresponden a DataLandia. Además, cada fuente se asigna a zonas con una regla distinta (`map_zona_fuente` para TLC, coordenadas para el GPS), así que el cruce funciona técnicamente, pero sus números solo tendrán sentido con las zonas reales.
+- El GPS solo cubre las franjas en que corrió el simulador. Para llenar más franjas hay que correrlo en otros horarios.
 - El streaming cubre solo el GPS. Sensores, solicitudes de viaje y carga de trenes quedan como trabajo futuro.
 - La cuenta de servicio que usan Dataproc y Dataflow tiene roles amplios heredados del proyecto. Para producción habría que reducirlos.
