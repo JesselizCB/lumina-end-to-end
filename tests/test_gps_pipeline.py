@@ -16,7 +16,7 @@ from lumina.streaming.gps_pipeline import (
     enrich,
     load_zones,
 )
-from lumina.streaming.gps_simulator import create_fleet, tick
+from lumina.streaming.gps_simulator import create_fleet, replay_clock, tick
 
 ZONES = load_zones(Path(__file__).parents[1] / "seeds" / "zonas.csv")
 NOW = datetime(2026, 11, 11, 16, 7, 30, tzinfo=timezone.utc)
@@ -48,7 +48,14 @@ def test_valid_event_gets_zone_and_time_keys():
         "ts_15m": "2026-11-11T16:00:00+00:00",
         "dia": "2026-11-11",
         "zona_id": 2,
+        "modo": "tiempo_real",
     }
+
+
+def test_replayed_event_keeps_its_mode():
+    row = enrich(event(modo="reproduccion"), ZONES)
+
+    assert row["modo"] == "reproduccion"
 
 
 @pytest.mark.parametrize(
@@ -65,6 +72,7 @@ def test_valid_event_gets_zone_and_time_keys():
         (event(ts="ayer"), "ts_invalido"),
         (event(ts="2026-11-11T16:07:30"), "ts_invalido"),
         (event(lat=-33.45, lon=-70.66), "zona_desconocida"),
+        (event(modo="futuro"), "modo_invalido"),
     ],
 )
 def test_invalid_event_is_rejected_with_reason(message, motivo):
@@ -145,6 +153,38 @@ def test_simulator_can_inject_errors():
     for message in messages:
         with pytest.raises(InvalidEvent):
             enrich(message, ZONES)
+
+
+def test_replayed_tick_marks_events_and_uses_simulated_time():
+    fleet = create_fleet(3, random.Random(1))
+    simulated = datetime(2026, 11, 10, 11, 0, tzinfo=timezone.utc)
+
+    messages = tick(
+        fleet, simulated, random.Random(2), error_rate=0.0, duplicate_rate=0.0,
+        modo="reproduccion",
+    )
+
+    rows = [enrich(message, ZONES) for message in messages]
+    assert {row["modo"] for row in rows} == {"reproduccion"}
+    assert {row["ts"] for row in rows} == {"2026-11-10T11:00:00+00:00"}
+
+
+def test_replay_clock_covers_the_range_in_steps():
+    start = datetime(2026, 11, 10, 11, 0, tzinfo=timezone.utc)
+    end = datetime(2026, 11, 10, 11, 30, tzinfo=timezone.utc)
+
+    moments = list(replay_clock(start, end, step_seconds=300))
+
+    assert len(moments) == 6
+    assert moments[0] == start
+    assert moments[-1] == datetime(2026, 11, 10, 11, 25, tzinfo=timezone.utc)
+
+
+def test_replay_clock_rejects_an_empty_range():
+    moment = datetime(2026, 11, 10, 11, 0, tzinfo=timezone.utc)
+
+    with pytest.raises(ValueError):
+        list(replay_clock(moment, moment, step_seconds=300))
 
 
 def test_simulator_can_inject_duplicates():

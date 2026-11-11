@@ -22,6 +22,8 @@ VALID = "validos"
 ERRORS = "errores"
 REQUIRED_FIELDS = ("evento_id", "vehiculo_id", "lat", "lon", "velocidad", "ts")
 NUMERIC_FIELDS = ("lat", "lon", "velocidad")
+# Replayed events carry simulated timestamps, so latency is measured on tiempo_real only.
+MODES = ("tiempo_real", "reproduccion")
 MAX_SPEED_KMH = 150.0
 BUCKET_SECONDS = 15 * 60
 # How long an evento_id is remembered; the first copy is emitted immediately.
@@ -96,6 +98,9 @@ def enrich(message: bytes, zones: list[dict]) -> dict:
     zone = find_zone(zones, lat, lon)
     if zone is None:
         raise InvalidEvent("zona_desconocida")
+    mode = data.get("modo", "tiempo_real")
+    if mode not in MODES:
+        raise InvalidEvent("modo_invalido")
 
     bucket = datetime.fromtimestamp(
         int(ts.timestamp()) // BUCKET_SECONDS * BUCKET_SECONDS, tz=timezone.utc
@@ -110,6 +115,7 @@ def enrich(message: bytes, zones: list[dict]) -> dict:
         "ts_15m": bucket.isoformat(),
         "dia": ts.date().isoformat(),
         "zona_id": zone,
+        "modo": mode,
     }
 
 
