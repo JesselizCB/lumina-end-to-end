@@ -3,8 +3,8 @@
 The job expects a Spark session running in UTC because TLC timestamps are
 naive New York local times.
 
-References starting with ``bq:`` are BigQuery tables; anything else is a
-Parquet path.
+References starting with ``bq:`` are BigQuery tables, ``iceberg:`` are Apache
+Iceberg tables (format v2 on GCS), and anything else is a Parquet path.
 """
 
 import argparse
@@ -20,6 +20,7 @@ KM_PER_MILE = 1.60934
 MAX_SPEED_KMH = 120.0
 BUCKET_SECONDS = 15 * 60
 BIGQUERY_PREFIX = "bq:"
+ICEBERG_PREFIX = "iceberg:"
 PERIOD_PATTERN = re.compile(r"\d{4}-(0[1-9]|1[0-2])")
 
 REQUIRED_COLUMNS = [
@@ -73,7 +74,6 @@ def _rejection_reason(periodo: str) -> Column:
     for column in REQUIRED_COLUMNS:
         any_null = any_null | F.col(column).isNull()
 
-    # The source month is defined in local time, before the UTC conversion.
     pickup_month = F.date_format("tpep_pickup_datetime", "yyyy-MM")
     return (
         F.when(any_null, "campo_nulo")
@@ -92,11 +92,7 @@ def _rejection_reason(periodo: str) -> Column:
 def build_silver_trips(
     bronze: DataFrame, zone_map: DataFrame, periodo: str
 ) -> tuple[DataFrame, DataFrame]:
-    """Return ``(silver, rejected)``; rejected rows keep Bronze columns plus ``motivo``.
-
-    ``periodo`` is the source file month as ``YYYY-MM``; trips starting outside
-    it are rejected.
-    """
+    """Return ``(silver, rejected)``; rejected rows keep Bronze columns plus ``motivo``."""
     if not PERIOD_PATTERN.fullmatch(periodo):
         raise ValueError(f"periodo must be YYYY-MM, got {periodo}")
     zones = _source_zones(zone_map)
@@ -153,12 +149,31 @@ def _read(spark: SparkSession, reference: str) -> DataFrame:
             .option("table", reference.removeprefix(BIGQUERY_PREFIX))
             .load()
         )
+    if reference.startswith(ICEBERG_PREFIX):
+        return spark.table(reference.removeprefix(ICEBERG_PREFIX))
     return spark.read.parquet(reference)
 
 
+def _write_iceberg(
+    df: DataFrame, table_name: str, partition_col: str | None = None
+) -> None:
+    writer = (
+        df.writeTo(table_name)
+        .using("iceberg")
+        .tableProperty("format-version", "2")
+    )
+    if partition_col:
+        writer = writer.partitionedBy(partition_col)
+    writer.createOrReplace()
+
+
 def _write_silver(silver: DataFrame, reference: str, temp_bucket: str | None) -> None:
+    if reference.startswith(ICEBERG_PREFIX):
+        _write_iceberg(
+            silver, reference.removeprefix(ICEBERG_PREFIX), partition_col="dia"
+        )
+        return
     if reference.startswith(BIGQUERY_PREFIX):
-        # Direct writes ignore partitioning and clustering, so load through GCS.
         (
             silver.write.format("bigquery")
             .option("writeMethod", "indirect")
@@ -174,6 +189,9 @@ def _write_silver(silver: DataFrame, reference: str, temp_bucket: str | None) ->
 
 
 def _write_rejected(rejected: DataFrame, reference: str) -> None:
+    if reference.startswith(ICEBERG_PREFIX):
+        _write_iceberg(rejected, reference.removeprefix(ICEBERG_PREFIX))
+        return
     if reference.startswith(BIGQUERY_PREFIX):
         (
             rejected.write.format("bigquery")
