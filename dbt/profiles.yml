@@ -4,9 +4,9 @@ lumina:
     dev:
       type: bigquery
       method: oauth
-      project: project1-508022
+      project: "{{ env_var('GCP_PROJECT') }}"
       dataset: gold
-      location: southamerica-west1
+      location: "{{ env_var('GCP_REGION', 'us-central1') }}"
       threads: 4
       job_execution_timeout_seconds: 300
       # Safety cap per query: 10 GB.
