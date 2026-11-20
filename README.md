@@ -36,7 +36,7 @@ GOLD       silver.viajes + silver.gps_vehiculo + silver.zonas → dbt → dim_zo
 Todos los comandos se corren desde la raíz del repositorio. En zsh, escriban siempre `${P}` con llaves: `$P:silver` se interpreta mal.
 
 ```bash
-P=project1-508022
+P=lumina-bigdata
 R=southamerica-west1
 ```
 
@@ -83,7 +83,17 @@ for d in bronze silver gold; do bq --location=${R} mk --dataset ${P}:${d}; done
 for t in gps-vehiculo errores-dlq; do
   gcloud pubsub topics create ${t} --message-storage-policy-allowed-regions=${R}
 done
+
+# Minimal roles for the service account that runs Dataproc and Dataflow.
+# Projects inside an organization do not grant it Editor automatically.
+SA=$(gcloud projects describe ${P} --format="value(projectNumber)")-compute@developer.gserviceaccount.com
+for r in roles/dataproc.worker roles/dataflow.worker roles/bigquery.dataEditor roles/bigquery.jobUser \
+         roles/bigquery.readSessionUser roles/storage.objectAdmin roles/pubsub.editor; do
+  gcloud projects add-iam-policy-binding ${P} --member=serviceAccount:${SA} --role=${r} --condition=None --quiet
+done
 ```
+
+`roles/pubsub.editor` es necesario porque Dataflow crea una suscripción interna para seguir el tiempo de los eventos. Sin ese rol, el job queda en `Running` pero no escribe nada en Silver.
 
 ### 4. Batch: viajes TLC con Spark
 
@@ -127,7 +137,7 @@ N=$(gcloud projects describe ${P} --format="value(projectNumber)")
 
 bq mk --table --time_partitioning_field=dia --time_partitioning_type=DAY --clustering_fields=zona_id \
   ${P}:silver.gps_vehiculo \
-  evento_id:STRING,vehiculo_id:STRING,lat:FLOAT64,lon:FLOAT64,velocidad_kmh:FLOAT64,ts:TIMESTAMP,ts_15m:TIMESTAMP,dia:DATE,zona_id:INT64,procesado_en:TIMESTAMP
+  evento_id:STRING,vehiculo_id:STRING,lat:FLOAT64,lon:FLOAT64,velocidad_kmh:FLOAT64,ts:TIMESTAMP,ts_15m:TIMESTAMP,dia:DATE,zona_id:INT64,procesado_en:TIMESTAMP,modo:STRING
 
 for t in gps_vehiculo errores; do
   bq mk --table --time_partitioning_field=publish_time --time_partitioning_type=DAY ${P}:bronze.${t} \
@@ -232,12 +242,12 @@ cd dbt
 ```sql
 -- Batch: entrada, salida y rechazos
 SELECT
-  (SELECT COUNT(*) FROM `project1-508022.bronze.viajes_tlc`) AS bronze,
-  (SELECT COUNT(*) FROM `project1-508022.silver.viajes`) AS silver,
-  (SELECT COUNT(*) FROM `project1-508022.silver.rechazos_viajes`) AS rechazados;
+  (SELECT COUNT(*) FROM `lumina-bigdata.bronze.viajes_tlc`) AS bronze,
+  (SELECT COUNT(*) FROM `lumina-bigdata.silver.viajes`) AS silver,
+  (SELECT COUNT(*) FROM `lumina-bigdata.silver.rechazos_viajes`) AS rechazados;
 
 SELECT motivo, COUNT(*) AS n
-FROM `project1-508022.silver.rechazos_viajes`
+FROM `lumina-bigdata.silver.rechazos_viajes`
 GROUP BY motivo ORDER BY n DESC;
 
 -- Tiempo real: latencia desde el evento hasta Silver (excluye la reproducción)
@@ -245,16 +255,16 @@ SELECT
   COUNT(*) AS eventos,
   APPROX_QUANTILES(TIMESTAMP_DIFF(procesado_en, ts, MILLISECOND), 100)[OFFSET(50)] / 1000 AS p50_segundos,
   APPROX_QUANTILES(TIMESTAMP_DIFF(procesado_en, ts, MILLISECOND), 100)[OFFSET(95)] / 1000 AS p95_segundos
-FROM `project1-508022.silver.gps_vehiculo`
+FROM `lumina-bigdata.silver.gps_vehiculo`
 WHERE COALESCE(modo, 'tiempo_real') = 'tiempo_real';
 
 -- Tiempo real: crudo frente a limpio, y errores por motivo
 SELECT
-  (SELECT COUNT(*) FROM `project1-508022.bronze.gps_vehiculo`) AS bronze,
-  (SELECT COUNT(*) FROM `project1-508022.silver.gps_vehiculo`) AS silver;
+  (SELECT COUNT(*) FROM `lumina-bigdata.bronze.gps_vehiculo`) AS bronze,
+  (SELECT COUNT(*) FROM `lumina-bigdata.silver.gps_vehiculo`) AS silver;
 
 SELECT JSON_VALUE(data, '$.motivo') AS motivo, COUNT(*) AS n
-FROM `project1-508022.bronze.errores`
+FROM `lumina-bigdata.bronze.errores`
 GROUP BY motivo ORDER BY n DESC;
 ```
 
@@ -314,7 +324,7 @@ La zona y franja con más presión es la **zona 4 a las 18:00**: 390 viajes diar
 ```sql
 -- Zonas y franjas con más viajes por vehículo disponible
 SELECT zona_id, hora_inicio, viajes_promedio_dia, vehiculos_promedio, viajes_por_vehiculo
-FROM `project1-508022.gold.fact_oferta_demanda`
+FROM `lumina-bigdata.gold.fact_oferta_demanda`
 WHERE intervalos_gps > 0
 ORDER BY viajes_por_vehiculo DESC;
 ```

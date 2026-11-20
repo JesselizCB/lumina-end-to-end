@@ -4,7 +4,7 @@ lumina:
     dev:
       type: bigquery
       method: oauth
-      project: project1-508022
+      project: lumina-bigdata
       dataset: gold
       location: southamerica-west1
       threads: 4
