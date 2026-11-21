@@ -71,7 +71,7 @@ done
 # 4. Tabla Silver de telemetría GPS
 bq mk --table --time_partitioning_field=dia --time_partitioning_type=DAY --clustering_fields=zona_id \
   ${P}:silver.gps_vehiculo \
-  evento_id:STRING,vehiculo_id:STRING,lat:FLOAT64,lon:FLOAT64,velocidad_kmh:FLOAT64,ts:TIMESTAMP,ts_15m:TIMESTAMP,dia:DATE,zona_id:INT64,procesado_en:TIMESTAMP
+  evento_id:STRING,vehiculo_id:STRING,lat:FLOAT64,lon:FLOAT64,velocidad_kmh:FLOAT64,ts:TIMESTAMP,ts_15m:TIMESTAMP,dia:DATE,zona_id:INT64,modo:STRING,procesado_en:TIMESTAMP
 
 # 5. Tablas Bronze de streaming y permisos para Pub/Sub
 for t in gps_vehiculo errores; do
@@ -202,7 +202,8 @@ gcloud storage cp src/lumina/batch/silver_trips.py gs://lumina-raw-${P}/dependen
 # 3. Subir DAG y proyecto dbt al bucket interno de Composer
 DAGS_BUCKET=$(gcloud composer environments describe lumina-airflow --location=${R} --format="value(config.dagGcsPrefix)")
 gcloud storage cp dags/lumina_batch_gold_dag.py ${DAGS_BUCKET}/
-gcloud storage cp -r dbt ${DAGS_BUCKET}/
+gcloud storage cp dbt/dbt_project.yml dbt/profiles.yml ${DAGS_BUCKET}/dbt/
+gcloud storage cp -r dbt/models dbt/macros ${DAGS_BUCKET}/dbt/
 
 # 4. Configurar variables en Airflow y disparar el pipeline end-to-end
 gcloud composer environments run lumina-airflow --location=${R} variables -- set gcp_project ${P}
@@ -240,15 +241,11 @@ Ejecuta estas consultas en **BigQuery Studio** para validar y tomar capturas de 
 SELECT
   (SELECT COUNT(*) FROM `bronze.viajes_tlc`) AS bronze_viajes,
   (SELECT COUNT(*) FROM `silver.viajes`) AS silver_iceberg,
-  (SELECT COUNT(*) FROM `silver.rechazos_viajes`) AS silver_rechazados,
+  (SELECT COUNT(*) FROM `silver.rechazos_viajes`) AS silver_rechazados, 
   (SELECT COUNT(*) FROM `gold.fact_viaje`) AS gold_fact_viaje;
 
 -- 2. Auditoría de Snapshots Apache Iceberg (Time Travel)
-SELECT snapshot_id, committed_at, operation, summary
-FROM `silver.viajes$snapshots`
-ORDER BY committed_at DESC
-LIMIT 5;
-
+-- Ejecuta la auditoría con gcloud storage y jq en Cloud Shell, después de este bloque.
 -- 3. Latencia Streaming (p50 y p95 en segundos)
 SELECT
   COUNT(*) AS eventos,
@@ -267,6 +264,19 @@ WHERE intervalos_gps > 0
 ORDER BY viajes_por_vehiculo DESC
 LIMIT 5;
 ```
+
+Para auditar los snapshots de Iceberg, ejecuta en **Cloud Shell** (con `P` configurada):
+
+```bash
+METADATA=$(gcloud storage ls "gs://lumina-raw-${P}/iceberg/silver/viajes/metadata/*.metadata.json" | sort -V | tail -n 1)
+gcloud storage cat "${METADATA}" | jq -r '
+  .snapshots | sort_by(."timestamp-ms") | reverse | .[:5][]
+  | [."snapshot-id", (."timestamp-ms" | todateiso8601),
+     (."summary".operation // "unknown"), (."summary" | tojson)]
+  | @tsv'
+```
+
+El DAG espera 480 filas en `fact_oferta_demanda` (5 zonas × 96 franjas) y al menos 320 combinaciones zona-franja con GPS. Para satisfacer esa cobertura ejecuta la reproducción horaria del paso 5 antes de disparar el DAG; sin ella, `reconciliation_check` falla aunque exista la cuadrícula de 480 filas.
 
 ---
 

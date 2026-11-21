@@ -14,7 +14,7 @@ from airflow.providers.google.cloud.operators.dataproc import (
     DataprocCreateBatchOperator,
 )
 
-PROJECT_ID = Variable.get("gcp_project", default_var=os.getenv("GCP_PROJECT", ""))
+PROJECT_ID = Variable.get("gcp_project")
 REGION = Variable.get("gcp_region", default_var=os.getenv("GCP_REGION", "us-central1"))
 RAW_BUCKET = Variable.get("raw_bucket", default_var=f"lumina-raw-{PROJECT_ID}")
 PERIODO = Variable.get("periodo", default_var="2024-01")
@@ -115,7 +115,15 @@ with DAG(
                 (SELECT COUNT(*) FROM `{PROJECT_ID}.silver.viajes`) > 0
                 AND (SELECT COUNT(*) FROM `{PROJECT_ID}.silver.viajes`)
                   = (SELECT COUNT(*) FROM `{PROJECT_ID}.gold.fact_viaje`)
-                AND (SELECT COUNT(*) FROM `{PROJECT_ID}.gold.fact_oferta_demanda`) = 480
+                AND (
+                    SELECT COUNT(*)
+                    FROM `{PROJECT_ID}.gold.fact_oferta_demanda`
+                ) = 480
+                -- 5 zones x 96 slots; replay covers 64 slots across 5 zones.
+                AND (
+                    SELECT COUNTIF(intervalos_gps > 0)
+                    FROM `{PROJECT_ID}.gold.fact_oferta_demanda`
+                ) >= 320
         """,
     )
 

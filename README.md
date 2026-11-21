@@ -3,6 +3,7 @@
 Implementación de la arquitectura de la Parte 1 sobre GCP: un pipeline **batch** con Spark y uno de **tiempo real** con Beam, que limpian, enriquecen y cruzan los datos por zona y franja de 15 minutos. Ambos alimentan un modelo estrella en Gold construido con dbt.
 
 Para el contexto del equipo (decisiones, plan y pendientes) ver [`CONTEXTO.md`](CONTEXTO.md).
+Para el despliegue completo de esta arquitectura en GCP, sigue la [guía de despliegue de la Parte 3](gu_a_de_despliegue_en_gcp_proyecto_lumina_parte_3.md).
 
 ## Qué cubre de la evaluación
 
@@ -36,9 +37,13 @@ GOLD       silver.viajes + silver.gps_vehiculo + silver.zonas → dbt → dim_zo
 Todos los comandos se corren desde la raíz del repositorio. En zsh, escriban siempre `${P}` con llaves: `$P:silver` se interpreta mal.
 
 ```bash
-P=project1-508022
-R=southamerica-west1
+export P=luminia-parte3-2026
+export R=us-central1
+gcloud config set project "${P}"
+gcloud config get-value project
 ```
+
+`P` es el ID del proyecto de GCP y `R` la región usada por BigQuery, Dataflow y Composer. Si abres una nueva sesión de Cloud Shell, vuelve a ejecutar estas asignaciones y comprueba el proyecto activo antes de correr comandos.
 
 ### 1. Preparar el entorno local
 
@@ -127,7 +132,7 @@ N=$(gcloud projects describe ${P} --format="value(projectNumber)")
 
 bq mk --table --time_partitioning_field=dia --time_partitioning_type=DAY --clustering_fields=zona_id \
   ${P}:silver.gps_vehiculo \
-  evento_id:STRING,vehiculo_id:STRING,lat:FLOAT64,lon:FLOAT64,velocidad_kmh:FLOAT64,ts:TIMESTAMP,ts_15m:TIMESTAMP,dia:DATE,zona_id:INT64,procesado_en:TIMESTAMP
+  evento_id:STRING,vehiculo_id:STRING,lat:FLOAT64,lon:FLOAT64,velocidad_kmh:FLOAT64,ts:TIMESTAMP,ts_15m:TIMESTAMP,dia:DATE,zona_id:INT64,modo:STRING,procesado_en:TIMESTAMP
 
 for t in gps_vehiculo errores; do
   bq mk --table --time_partitioning_field=publish_time --time_partitioning_type=DAY ${P}:bronze.${t} \
@@ -229,15 +234,17 @@ cd dbt
 
 ### 7. Verificar los resultados
 
+Antes de ejecutar las consultas, reemplaza `YOUR_PROJECT_ID` por el valor configurado en `P`.
+
 ```sql
 -- Batch: entrada, salida y rechazos
 SELECT
-  (SELECT COUNT(*) FROM `project1-508022.bronze.viajes_tlc`) AS bronze,
-  (SELECT COUNT(*) FROM `project1-508022.silver.viajes`) AS silver,
-  (SELECT COUNT(*) FROM `project1-508022.silver.rechazos_viajes`) AS rechazados;
+  (SELECT COUNT(*) FROM `YOUR_PROJECT_ID.bronze.viajes_tlc`) AS bronze,
+  (SELECT COUNT(*) FROM `YOUR_PROJECT_ID.silver.viajes`) AS silver,
+  (SELECT COUNT(*) FROM `YOUR_PROJECT_ID.silver.rechazos_viajes`) AS rechazados;
 
 SELECT motivo, COUNT(*) AS n
-FROM `project1-508022.silver.rechazos_viajes`
+FROM `YOUR_PROJECT_ID.silver.rechazos_viajes`
 GROUP BY motivo ORDER BY n DESC;
 
 -- Tiempo real: latencia desde el evento hasta Silver (excluye la reproducción)
@@ -245,16 +252,16 @@ SELECT
   COUNT(*) AS eventos,
   APPROX_QUANTILES(TIMESTAMP_DIFF(procesado_en, ts, MILLISECOND), 100)[OFFSET(50)] / 1000 AS p50_segundos,
   APPROX_QUANTILES(TIMESTAMP_DIFF(procesado_en, ts, MILLISECOND), 100)[OFFSET(95)] / 1000 AS p95_segundos
-FROM `project1-508022.silver.gps_vehiculo`
+FROM `YOUR_PROJECT_ID.silver.gps_vehiculo`
 WHERE COALESCE(modo, 'tiempo_real') = 'tiempo_real';
 
 -- Tiempo real: crudo frente a limpio, y errores por motivo
 SELECT
-  (SELECT COUNT(*) FROM `project1-508022.bronze.gps_vehiculo`) AS bronze,
-  (SELECT COUNT(*) FROM `project1-508022.silver.gps_vehiculo`) AS silver;
+  (SELECT COUNT(*) FROM `YOUR_PROJECT_ID.bronze.gps_vehiculo`) AS bronze,
+  (SELECT COUNT(*) FROM `YOUR_PROJECT_ID.silver.gps_vehiculo`) AS silver;
 
 SELECT JSON_VALUE(data, '$.motivo') AS motivo, COUNT(*) AS n
-FROM `project1-508022.bronze.errores`
+FROM `YOUR_PROJECT_ID.bronze.errores`
 GROUP BY motivo ORDER BY n DESC;
 ```
 
@@ -267,7 +274,7 @@ GROUP BY motivo ORDER BY n DESC;
 | Viajes en Bronze | 2.964.624 |
 | Viajes en Silver | 2.868.850 |
 | Rechazados | 95.694 (60.371 por distancia no positiva, 34.064 por tarifa negativa, 1.129 por velocidad, 112 por horario, 18 fuera del mes) |
-| Duplicados eliminados | 80 |
+| Duplicados eliminados | 80 por `viaje_id`; se descartan de Silver y no se copian a `silver.rechazos_viajes` |
 | Duración del job | Unos 2 minutos, incluido el arranque |
 
 **Tiempo real, 4 minutos de simulador con 50 vehículos, en Dataflow**
@@ -298,7 +305,7 @@ Los primeros 2 minutos tuvieron latencias de hasta 2 minutos, porque los eventos
 |---|---|
 | Pruebas de dbt | 32 de 32 pasan |
 | `fact_viaje` | 2.868.850 viajes, igual que Silver, en 31 días |
-| `fact_oferta_demanda` | 480 filas (5 zonas × 96 franjas); 320 con datos de GPS (64 franjas de 6:00 a 22:00) |
+| `fact_oferta_demanda` | 480 filas (5 zonas × 96 franjas); la reproducción horaria llena 320 combinaciones zona-franja (64 franjas de 6:00 a 22:00) |
 | Demanda diaria por periodo | Tarde 34.585, noche 30.293, mañana 20.690, madrugada 6.976 |
 
 Viajes por vehículo disponible, promedio por periodo (solo franjas con GPS):
@@ -314,7 +321,7 @@ La zona y franja con más presión es la **zona 4 a las 18:00**: 390 viajes diar
 ```sql
 -- Zonas y franjas con más viajes por vehículo disponible
 SELECT zona_id, hora_inicio, viajes_promedio_dia, vehiculos_promedio, viajes_por_vehiculo
-FROM `project1-508022.gold.fact_oferta_demanda`
+FROM `YOUR_PROJECT_ID.gold.fact_oferta_demanda`
 WHERE intervalos_gps > 0
 ORDER BY viajes_por_vehiculo DESC;
 ```
@@ -337,3 +344,23 @@ odd/tasks/                             Registro de tareas y decisiones
 - El GPS de 6:00 a 22:00 viene de una reproducción con reloj simulado (`modo = 'reproduccion'`), no de tiempo real. La madrugada (22:00 a 6:00) no tiene GPS.
 - El streaming cubre solo el GPS. Sensores, solicitudes de viaje y carga de trenes quedan como trabajo futuro.
 - La cuenta de servicio que usan Dataproc y Dataflow tiene roles amplios heredados del proyecto. Para producción habría que reducirlos.
+
+## Arquitectura y orden de despliegue end-to-end (Parte 3)
+
+La arquitectura completa es **Cloud Storage → BigQuery Bronze → Spark en Dataproc → Silver Iceberg → dbt/BigQuery Gold → API FastAPI en Cloud Run** para el batch TLC; en paralelo, **Pub/Sub → Beam en Dataflow → `silver.gps_vehiculo`**, con los errores enviados a Pub/Sub DLQ y conservados en Bronze. Cloud Composer orquesta la carga batch, la transformación Iceberg, `dbt build` y la reconciliación.
+
+Orden recomendado: (1) crear proyecto, región y recursos base; (2) cargar TLC y mapas de zonas; (3) crear la tabla GPS con `modo:STRING` y desplegar Dataflow; (4) enviar eventos en tiempo real y ejecutar la reproducción de 06:00 a 22:00; (5) subir DAG y dbt a Composer y disparar `lumina_end_to_end_pipeline`; (6) desplegar la API y validar consultas; (7) drenar/eliminar los servicios para evitar costos. La [guía de despliegue](gu_a_de_despliegue_en_gcp_proyecto_lumina_parte_3.md) contiene los comandos paso a paso.
+
+La reconciliación comprueba que `fact_viaje` conserve todos los viajes Silver, que `fact_oferta_demanda` tenga 480 filas (5 zonas × 96 franjas) y que al menos 320 combinaciones zona-franja tengan GPS. Esa cobertura requiere haber ejecutado la reproducción horaria del paso 5. En la tabla TLC de referencia, Bronze = Silver (2.868.850) + rechazos (95.694) + 80 filas duplicadas por `viaje_id`; los duplicados se eliminan con `dropDuplicates` y hoy no se guardan en la tabla de rechazos.
+
+### Problemas comunes
+
+- **Cloud Shell vuelve a otro proyecto:** establece de nuevo `P` y `R`, ejecuta `gcloud config set project "${P}"` y verifica con `gcloud config get-value project` antes de continuar. Las variables de shell no necesariamente sobreviven a una nueva sesión.
+- **El proyecto de la guía no coincide:** `lumina-datalandia-p3` es solo un ejemplo; en este despliegue usa el ID real `luminia-parte3-2026`. Actualiza `P` y sustituye `YOUR_PROJECT_ID` por ese ID en consultas SQL.
+- **Falla `reconciliation_check` en las 320 combinaciones GPS:** confirma que terminara la reproducción del paso 5 antes de disparar el DAG. Las 480 filas de Gold son la cuadrícula completa, pero no prueban por sí solas que haya GPS en las franjas esperadas.
+- **Falla una consulta por `modo` desconocido:** asegúrate de crear `silver.gps_vehiculo` con `modo:STRING`; la Beam pipeline escribe esa columna para distinguir `tiempo_real` de `reproduccion`.
+  Si la tabla ya existía sin esa columna, ejecuta en BigQuery Studio:
+  ```sql
+  ALTER TABLE `YOUR_PROJECT_ID.silver.gps_vehiculo`
+    ADD COLUMN IF NOT EXISTS modo STRING;
+  ```
