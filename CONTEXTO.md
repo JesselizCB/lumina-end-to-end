@@ -116,12 +116,12 @@ Las zonas siguen siendo provisionales (`seeds/map_zona_fuente.csv`), así que lo
 
 ## Recursos en GCP
 
-Proyecto `project1-508022`, región `southamerica-west1` (Santiago).
+Proyecto `lumina-bigdata`, región `southamerica-west1` (Santiago).
 
 | Recurso | Nombre |
 |---|---|
 | Alerta de presupuesto | `lumina-p2`, S/ 100, calculada sin descontar créditos |
-| Bucket privado | `gs://lumina-raw-project1-508022` |
+| Bucket privado | `gs://lumina-raw-lumina-bigdata` |
 | Datasets | `bronze`, `silver`, `gold` |
 | Tópicos | `gps-vehiculo`, `errores-dlq` |
 | Tablas | `bronze.viajes_tlc`, `bronze.gps_vehiculo`, `bronze.errores`, `silver.map_zona_fuente`, `silver.viajes`, `silver.rechazos_viajes`, `silver.gps_vehiculo` |
@@ -134,7 +134,7 @@ Proyecto `project1-508022`, región `southamerica-west1` (Santiago).
 ## Cómo correr el job de Spark en GCP
 
 ```bash
-P=project1-508022
+P=lumina-bigdata
 gcloud dataproc batches submit pyspark src/lumina/batch/silver_trips.py \
   --region=southamerica-west1 --version=2.2 \
   --deps-bucket="gs://lumina-raw-${P}" \

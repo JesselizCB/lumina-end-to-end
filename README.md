@@ -41,6 +41,7 @@ export P=luminia-parte3-2026
 export R=us-central1
 gcloud config set project "${P}"
 gcloud config get-value project
+
 ```
 
 `P` es el ID del proyecto de GCP y `R` la región usada por BigQuery, Dataflow y Composer. Si abres una nueva sesión de Cloud Shell, vuelve a ejecutar estas asignaciones y comprueba el proyecto activo antes de correr comandos.
@@ -88,7 +89,17 @@ for d in bronze silver gold; do bq --location=${R} mk --dataset ${P}:${d}; done
 for t in gps-vehiculo errores-dlq; do
   gcloud pubsub topics create ${t} --message-storage-policy-allowed-regions=${R}
 done
+
+# Minimal roles for the service account that runs Dataproc and Dataflow.
+# Projects inside an organization do not grant it Editor automatically.
+SA=$(gcloud projects describe ${P} --format="value(projectNumber)")-compute@developer.gserviceaccount.com
+for r in roles/dataproc.worker roles/dataflow.worker roles/bigquery.dataEditor roles/bigquery.jobUser \
+         roles/bigquery.readSessionUser roles/storage.objectAdmin roles/pubsub.editor; do
+  gcloud projects add-iam-policy-binding ${P} --member=serviceAccount:${SA} --role=${r} --condition=None --quiet
+done
 ```
+
+`roles/pubsub.editor` es necesario porque Dataflow crea una suscripción interna para seguir el tiempo de los eventos. Sin ese rol, el job queda en `Running` pero no escribe nada en Silver.
 
 ### 4. Batch: viajes TLC con Spark
 
